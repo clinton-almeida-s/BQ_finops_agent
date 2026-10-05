@@ -23,9 +23,9 @@ Thumbs.db
 
 # Analysis outputs
 reports/
-bq_finops_report*.html
 *.json
 !requirements.txt
+!bq_finops_report_demo.html
 
 # Cache
 .pytest_cache/
