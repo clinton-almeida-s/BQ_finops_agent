@@ -1,0 +1,32 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Environment files with secrets
+.env
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Analysis outputs
+reports/
+bq_finops_report*.html
+*.json
+!requirements.txt
+
+# Cache
+.pytest_cache/
+.mypy_cache/
