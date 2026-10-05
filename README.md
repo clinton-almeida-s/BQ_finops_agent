@@ -297,5 +297,3 @@ make schedule   # creates Cloud Scheduler job
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system design, data flow diagrams, and SQL queries.
 
 ---
-
-*Created: 2026-10-05 · Agentic AI demo for BigQuery FinOps*
