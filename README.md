@@ -85,21 +85,19 @@ BQ_finops_agent/
 
 ## Setup Guide — Production Deployment
 
-### 1. Service Account Setup
+### 1. Service Account Setup (Workload Identity)
 
-The agent needs read access to BigQuery metadata, Monitoring, and Billing, plus write access to store recommendations.
-
-**Option A — Single minimal-role SA (recommended for client projects):**
+**No SA key file needed.** Cloud Run authenticates directly using its own service account with least-privilege roles.
 
 ```bash
 export PROJECT_ID="your-project-id"
 
-# Create SA
+# Create Cloud Run service account with minimal roles
 gcloud iam service-accounts create bq-finops-agent \
   --display-name "BQ FinOps Agent" \
   --project $PROJECT_ID
 
-# Grant least-privilege roles
+# Grant least-privilege roles directly to the Cloud Run SA
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:bq-finops-agent@$PROJECT_ID.iam.gserviceaccount.com" \
   --role="roles/bigquery.user"          # Query INFORMATION_SCHEMA.JOBS
@@ -117,28 +115,15 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
   --role="roles/bigquery.dataEditor"     # Write recommendations table
 ```
 
-**Option B — Workload Identity (no key file, best practice):**
-Skip the JSON key entirely. Cloud Run can authenticate directly using its own service account. See section 4 below.
-
 ---
 
 ### 2. Manage Secrets — Secret Manager
 
-Store the SA key and Gemini API key in **Google Secret Manager** so they never appear in code, env vars, or Cloud Build logs.
+Only the **Gemini API key** needs to be stored in Secret Manager (SA key is no longer needed).
 
 ```bash
 # Enable Secret Manager API
 gcloud services enable secretmanager.googleapis.com
-
-# --- Store SA key ---
-gcloud secrets create finops-sa-key \
-  --project=$PROJECT_ID \
-  --replication-policy="automatic"
-
-# Write the key file to a temp location, then push to secret
-gcloud secrets versions add finops-sa-key \
-  --project=$PROJECT_ID \
-  --data-file=path/to/service-account-key.json
 
 # --- Store Gemini API key ---
 gcloud secrets create finops-gemini-key \
@@ -150,15 +135,10 @@ echo "AIzaSy..." | gcloud secrets versions add finops-gemini-key \
   --data-file=-
 ```
 
-Grant the Cloud Run service account permission to read these secrets:
+Grant the Cloud Run service account permission to read the secret:
 
 ```bash
-RUNNER_SA="PROJECT_ID@runner.gserviceaccount.com"  # Cloud Run default runner SA
-
-gcloud secrets add-iam-policy-binding finops-sa-key \
-  --project=$PROJECT_ID \
-  --member="serviceAccount:$RUNNER_SA" \
-  --role="roles/secretmanager.secretAccessor"
+RUNNER_SA="bq-finops-agent@$PROJECT_ID.iam.gserviceaccount.com"
 
 gcloud secrets add-iam-policy-binding finops-gemini-key \
   --project=$PROJECT_ID \
@@ -178,7 +158,7 @@ bq --project_id=$PROJECT_ID mk --dataset finops_recommendations
 
 ### 4. Deploy to Cloud Run (Workload Identity — no key file)
 
-This is the cleanest production setup. Cloud Run authenticates directly; the agent reads secrets at runtime.
+This is the recommended production setup. Cloud Run authenticates directly; only the Gemini key needs Secret Manager.
 
 ```bash
 # Enable required APIs
@@ -189,47 +169,23 @@ gcloud services enable run.googleapis.com \
   secretmanager.googleapis.com \
   generativelanguage.googleapis.com
 
-# Deploy (builds from Dockerfile, runs as the Cloud Run default service account)
+# Deploy (builds from Dockerfile, runs as the Cloud Run service account)
 gcloud run deploy bq-finops-agent \
   --source . \
   --region us-central1 \
   --allow-unauthenticated \
   --service-account bq-finops-agent@$PROJECT_ID.iam.gserviceaccount.com \
   --set-secrets \
-    GOOGLE_APPLICATION_CREDENTIALS=finops-sa-key:latest,\
     GEMINI_API_KEY=finops-gemini-key:latest \
   --set-env-vars \
     GOOGLE_CLOUD_PROJECT=$PROJECT_ID,\
+    WORKLOAD_IDENTITY=true,\
     ANALYSIS_DAYS_BACK=30,\
     SLOT_ANALYSIS_HOURS_BACK=168,\
     ANOMALY_THRESHOLD_STDDEV=2.0
 ```
 
-The `--set-secrets` flag mounts each secret as a file/env var at runtime — the key never appears in `gcloud` output or Cloud Build logs.
-
-**To read the SA key as a file** (BigQuery client library expects `GOOGLE_APPLICATION_CREDENTIALS` to point to a file), add this to your entrypoint or `main.py`:
-
-```python
-import os
-from google.cloud import secretmanager
-
-def get_secret_as_file(secret_id: str) -> str:
-    """Read a Secret Manager secret and write it to a temp file."""
-    client = secretmanager.SecretManagerServiceClient()
-    name = f"projects/{os.environ['GOOGLE_CLOUD_PROJECT']}/secrets/{secret_id}/versions/latest"
-    response = client.access_secret_version(name=name)
-    path = f"/tmp/{secret_id}.json"
-    with open(path, "w") as f:
-        f.write(response.payload.data.decode("utf-8"))
-    return path
-
-# In main, before any BigQuery client is created:
-if os.environ.get("GCP_SECRET_MODE") == "true":
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = get_secret_as_file("finops-sa-key")
-    os.environ["GEMINI_API_KEY"] = os.environ["GEMINI_API_KEY"]  # already mounted
-```
-
-Set `GCP_SECRET_MODE=true` in the `--set-env-vars` block above.
+The `WORKLOAD_IDENTITY=true` flag tells the agent to skip SA key authentication and use Cloud Run's built-in identity instead.
 
 ---
 
